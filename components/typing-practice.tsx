@@ -20,6 +20,8 @@ import {
   Hash,
   ShieldCheck,
   ShieldOff,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Slider } from "@/components/ui/slider"
@@ -28,6 +30,8 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { useLocalStorage } from "@/hooks/use-local-storage"
 import { cn } from "@/lib/utils"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { useToast } from "@/components/ui/use-toast"
 
 type TypingMode = "time" | "words"
 type TypingDifficulty = "easy" | "medium" | "hard" | "numbers" | "mixed"
@@ -133,9 +137,9 @@ const WordDisplay = React.memo(
         <span
           key={`char-${wordIndex}-${i}`}
           className={cn(
-            hasBeenTyped && correctChars[offset] && "text-green-500 dark:text-green-400",
+            hasBeenTyped && correctChars[offset] && "text-emerald-500 dark:text-emerald-400",
             hasBeenTyped && !correctChars[offset] && "text-red-500 dark:text-red-400 border-b border-red-500",
-            isCurrentChar && "bg-blue-200 dark:bg-blue-800 rounded",
+            isCurrentChar && "bg-teal-200 dark:bg-teal-800 rounded",
           )}
         >
           {char}
@@ -184,6 +188,8 @@ export default function TypingPractice() {
   const [showNamePrompt, setShowNamePrompt] = useState(false)
   const [activeTab, setActiveTab] = useState<"practice" | "challenge" | "room">("practice")
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 15 })
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [errorPosition, setErrorPosition] = useState<number | null>(null)
 
   const inputRef = useRef<HTMLInputElement>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
@@ -192,6 +198,7 @@ export default function TypingPractice() {
   const finishSound = useRef<HTMLAudioElement | null>(null)
   const textContainerRef = useRef<HTMLDivElement>(null)
   const shouldUpdateVisibleRange = useRef(false)
+  const { toast } = useToast()
 
   // Initialize audio elements
   useEffect(() => {
@@ -203,6 +210,13 @@ export default function TypingPractice() {
       if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [])
+
+  // Auto-focus input field on mount and after reset
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.focus()
+    }
+  }, [testActive, testComplete])
 
   // Check if we need to prompt for a username
   useEffect(() => {
@@ -225,7 +239,8 @@ export default function TypingPractice() {
     const shuffled = [...wordPool].sort(() => 0.5 - Math.random())
 
     // Get word count based on mode
-    const count = settings.mode === "words" ? settings.wordCount : 100
+    // For time mode, generate more words to ensure we don't run out
+    const count = settings.mode === "words" ? settings.wordCount : Math.min(300, wordPool.length)
     return shuffled.slice(0, count)
   }, [settings.difficulty, settings.mode, settings.wordCount])
 
@@ -250,6 +265,7 @@ export default function TypingPractice() {
     setCurrentWordIndex(0)
     setCurrentCharIndex(0)
     setVisibleRange({ start: 0, end: 15 })
+    setErrorPosition(null)
 
     // Initialize correctChars array with falses for each character in the entire text
     const totalChars = newWords.join(" ").length
@@ -269,6 +285,13 @@ export default function TypingPractice() {
 
     // Enable visible range updates after reset
     shouldUpdateVisibleRange.current = true
+
+    // Focus the input field
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus()
+      }
+    }, 0)
   }, [generateWords])
 
   // Initialize test on component mount or when settings change
@@ -347,13 +370,27 @@ export default function TypingPractice() {
         if (settings.mode === "time" && elapsed >= settings.timeLimit) {
           endTest()
         }
+
+        // End test if all words are typed in time mode
+        if (settings.mode === "time" && currentWordIndex >= words.length) {
+          endTest()
+        }
       }, 100)
 
       return () => {
         if (timerRef.current) clearInterval(timerRef.current)
       }
     }
-  }, [testActive, startTime, testComplete, settings.mode, settings.timeLimit, getCompletedCharCount])
+  }, [
+    testActive,
+    startTime,
+    testComplete,
+    settings.mode,
+    settings.timeLimit,
+    getCompletedCharCount,
+    currentWordIndex,
+    words.length,
+  ])
 
   // Calculate the current accuracy
   const calculateAccuracy = useCallback(() => {
@@ -384,44 +421,6 @@ export default function TypingPractice() {
     if (value.length > currentInput.length) {
       // User typed a character
       const typedChar = value[value.length - 1]
-
-      // Check if it's a space
-      if (typedChar === " ") {
-        // Only proceed if we've typed all the characters of the current word
-        // or if we're in relaxed mode
-        if (currentCharIndex === currentWord.length || settings.accuracyMode === "relaxed") {
-          // Move to next word
-          const newIndex = currentWordIndex + 1
-
-          // Temporarily disable visible range updates to prevent infinite loops
-          shouldUpdateVisibleRange.current = false
-          setCurrentWordIndex(newIndex)
-          setCurrentCharIndex(0)
-          setCurrentInput("")
-          // Re-enable visible range updates after state updates
-          setTimeout(() => {
-            shouldUpdateVisibleRange.current = true
-          }, 0)
-
-          // Check if we've completed the test in words mode
-          if (settings.mode === "words" && newIndex >= settings.wordCount) {
-            endTest()
-            return
-          }
-
-          // Play sound if enabled
-          if (settings.soundEnabled) {
-            correctSound.current?.play().catch(() => {})
-          }
-
-          return
-        } else if (settings.accuracyMode === "strict") {
-          // In strict mode, don't allow proceeding to next word until current word is correct
-          // Just ignore the space
-          return
-        }
-      }
-
       // Regular character typing (not space)
       const expectedChar = currentWord[currentCharIndex]
       const isCorrect = typedChar === expectedChar
@@ -446,13 +445,67 @@ export default function TypingPractice() {
       // Update accuracy
       setCurrentAccuracy(calculateCurrentAccuracy())
 
-      // Only increment character index if we're typing the correct character or in relaxed mode
-      if (isCorrect || settings.accuracyMode === "relaxed") {
+      // In strict mode, only increment character index if correct
+      // In relaxed mode, always increment
+      if (settings.accuracyMode === "strict") {
+        if (isCorrect) {
+          setCurrentCharIndex(currentCharIndex + 1)
+        }
+        setCurrentInput(value)
+      } else {
         setCurrentCharIndex(currentCharIndex + 1)
+        setCurrentInput(value)
       }
 
-      // Update current input
-      setCurrentInput(value)
+      // Check if it's a space
+      if (typedChar === " ") {
+        // In strict mode, don't allow proceeding if there's an error
+        if (settings.accuracyMode === "strict" && errorPosition !== null) {
+          return // Don't proceed if there's an error in strict mode
+        }
+
+        // Only proceed if we've typed all the characters of the current word
+        // or if we're in relaxed mode
+        if (currentCharIndex === currentWord.length || settings.accuracyMode === "relaxed") {
+          // Move to next word
+          const newIndex = currentWordIndex + 1
+
+          // Temporarily disable visible range updates to prevent infinite loops
+          shouldUpdateVisibleRange.current = false
+          setCurrentWordIndex(newIndex)
+          setCurrentCharIndex(0)
+          setCurrentInput("")
+          setErrorPosition(null)
+          // Re-enable visible range updates after state updates
+          setTimeout(() => {
+            shouldUpdateVisibleRange.current = true
+          }, 0)
+
+          // Check if we've completed all words
+          if (newIndex >= words.length) {
+            // End the test if we've typed all words, even in time mode
+            endTest()
+            return
+          }
+
+          // Check if we've completed the test in words mode
+          if (settings.mode === "words" && newIndex >= settings.wordCount) {
+            endTest()
+            return
+          }
+
+          // Play sound if enabled
+          if (settings.soundEnabled) {
+            correctSound.current?.play().catch(() => {})
+          }
+
+          return
+        } else if (settings.accuracyMode === "strict") {
+          // In strict mode, don't allow proceeding to next word until current word is correct
+          // Just ignore the space
+          return
+        }
+      }
     } else if (value.length < currentInput.length) {
       // Backspace handling
       // In both strict and relaxed modes, we allow backspacing
@@ -484,6 +537,11 @@ export default function TypingPractice() {
             newCorrectChars[charPosition] = false
             setCorrectChars(newCorrectChars)
           }
+        }
+
+        // In strict mode, if we're backspacing to or before the error position, clear it
+        if (settings.accuracyMode === "strict" && errorPosition !== null && currentCharIndex - 1 <= errorPosition) {
+          setErrorPosition(null)
         }
 
         // Update accuracy
@@ -706,6 +764,17 @@ export default function TypingPractice() {
     )
   }
 
+  // Get shareable link for challenge with clipboard feedback
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      // You could add a toast notification here
+      alert("Link copied to clipboard!")
+    } catch (err) {
+      console.error("Failed to copy: ", err)
+    }
+  }
+
   // Get shareable link for challenge
   const getChallengeLink = (challengeId: string) => {
     return `${window.location.origin}?challenge=${challengeId}`
@@ -742,7 +811,7 @@ export default function TypingPractice() {
     const visibleWords = words.slice(visibleRange.start, visibleRange.end)
 
     return (
-      <div className="flex flex-wrap gap-1 font-mono text-xl">
+      <div className="flex flex-wrap gap-1 font-mono text-2xl font-medium">
         {visibleWords.map((word, index) => {
           const wordIndex = index + visibleRange.start
           const isCurrentWord = wordIndex === currentWordIndex
@@ -766,13 +835,13 @@ export default function TypingPractice() {
 
   // Render
   return (
-    <Card className="w-full max-w-4xl shadow-lg">
+    <Card className="w-full max-w-4xl shadow-lg bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800">
       <CardContent className="p-6">
         <div className="flex justify-between items-center mb-6">
           <div className="flex gap-2">
             <Dialog>
               <DialogTrigger asChild>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" className="bg-white dark:bg-slate-800">
                   <Settings className="h-4 w-4 mr-2" />
                   Settings
                 </Button>
@@ -906,7 +975,7 @@ export default function TypingPractice() {
               </DialogContent>
             </Dialog>
 
-            <Button variant="outline" size="sm" onClick={resetTest}>
+            <Button variant="outline" size="sm" className="bg-white dark:bg-slate-800" onClick={resetTest}>
               <RefreshCw className="h-4 w-4 mr-2" />
               Reset
             </Button>
@@ -915,16 +984,20 @@ export default function TypingPractice() {
           <div className="flex gap-4">
             <div className="text-center">
               <div className="text-sm text-slate-500 dark:text-slate-400">WPM</div>
-              <div className="text-2xl font-bold">{testActive ? currentWpm : stats.wpm || 0}</div>
+              <div className="text-2xl font-bold text-teal-600 dark:text-teal-400">
+                {testActive ? currentWpm : stats.wpm || 0}
+              </div>
             </div>
             <div className="text-center">
               <div className="text-sm text-slate-500 dark:text-slate-400">Accuracy</div>
-              <div className="text-2xl font-bold">{testActive ? currentAccuracy : stats.accuracy || 100}%</div>
+              <div className="text-2xl font-bold text-teal-600 dark:text-teal-400">
+                {testActive ? currentAccuracy : stats.accuracy || 100}%
+              </div>
             </div>
             {settings.mode === "time" && (
               <div className="text-center">
                 <div className="text-sm text-slate-500 dark:text-slate-400">Time</div>
-                <div className="text-2xl font-bold">
+                <div className="text-2xl font-bold text-teal-600 dark:text-teal-400">
                   {testActive ? Math.max(0, Math.ceil(settings.timeLimit - timeElapsed)) : settings.timeLimit}s
                 </div>
               </div>
@@ -932,7 +1005,7 @@ export default function TypingPractice() {
             {settings.mode === "words" && (
               <div className="text-center">
                 <div className="text-sm text-slate-500 dark:text-slate-400">Words</div>
-                <div className="text-2xl font-bold">
+                <div className="text-2xl font-bold text-teal-600 dark:text-teal-400">
                   {currentWordIndex}/{settings.wordCount}
                 </div>
               </div>
@@ -961,29 +1034,33 @@ export default function TypingPractice() {
               <div className="text-center py-10">
                 <h2 className="text-2xl font-bold mb-4">Test Complete!</h2>
                 <div className="grid grid-cols-2 gap-4 max-w-md mx-auto mb-6">
-                  <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg">
+                  <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm">
                     <div className="text-sm text-slate-500 dark:text-slate-400">WPM</div>
-                    <div className="text-3xl font-bold">{currentWpm}</div>
+                    <div className="text-3xl font-bold text-teal-600 dark:text-teal-400">{currentWpm}</div>
                   </div>
-                  <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg">
+                  <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm">
                     <div className="text-sm text-slate-500 dark:text-slate-400">Accuracy</div>
-                    <div className="text-3xl font-bold">{currentAccuracy}%</div>
+                    <div className="text-3xl font-bold text-teal-600 dark:text-teal-400">{currentAccuracy}%</div>
                   </div>
-                  <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg">
+                  <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm">
                     <div className="text-sm text-slate-500 dark:text-slate-400">Time</div>
-                    <div className="text-3xl font-bold">{Math.round(timeElapsed)}s</div>
+                    <div className="text-3xl font-bold text-teal-600 dark:text-teal-400">
+                      {Math.round(timeElapsed)}s
+                    </div>
                   </div>
-                  <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg">
+                  <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm">
                     <div className="text-sm text-slate-500 dark:text-slate-400">Words</div>
-                    <div className="text-3xl font-bold">{currentWordIndex}</div>
+                    <div className="text-3xl font-bold text-teal-600 dark:text-teal-400">{currentWordIndex}</div>
                   </div>
                 </div>
-                <Button onClick={resetTest}>Try Again</Button>
+                <Button onClick={resetTest} className="bg-teal-600 hover:bg-teal-700">
+                  Try Again
+                </Button>
               </div>
             ) : (
-              <div className="bg-slate-50 dark:bg-slate-900 p-6 rounded-lg cursor-text" onClick={focusInput}>
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-lg cursor-text shadow-sm" onClick={focusInput}>
                 <div ref={textContainerRef} className="min-h-[120px] max-h-[120px] overflow-hidden mb-4 p-2">
-                  {renderTextContent}
+                  <div className="flex flex-wrap gap-1 font-mono text-2xl font-medium">{renderTextContent}</div>
                 </div>
 
                 <input
@@ -991,7 +1068,7 @@ export default function TypingPractice() {
                   type="text"
                   value={currentInput}
                   onChange={handleInputChange}
-                  className="w-full p-3 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                  className="w-full p-3 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-400"
                   placeholder={testActive ? "" : "Type to start..."}
                   autoFocus
                   autoComplete="off"
@@ -1035,17 +1112,19 @@ export default function TypingPractice() {
                   <div className="text-center py-8">
                     <h2 className="text-2xl font-bold mb-4">Challenge Complete!</h2>
                     <div className="grid grid-cols-2 gap-4 max-w-md mx-auto mb-6">
-                      <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg">
+                      <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm">
                         <div className="text-sm text-slate-500 dark:text-slate-400">WPM</div>
-                        <div className="text-3xl font-bold">{currentWpm}</div>
+                        <div className="text-3xl font-bold text-teal-600 dark:text-teal-400">{currentWpm}</div>
                       </div>
-                      <div className="bg-slate-100 dark:bg-slate-800 p-4 rounded-lg">
+                      <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm">
                         <div className="text-sm text-slate-500 dark:text-slate-400">Accuracy</div>
-                        <div className="text-3xl font-bold">{currentAccuracy}%</div>
+                        <div className="text-3xl font-bold text-teal-600 dark:text-teal-400">{currentAccuracy}%</div>
                       </div>
                     </div>
                     <div className="flex gap-4 justify-center">
-                      <Button onClick={resetTest}>Try Again</Button>
+                      <Button onClick={resetTest} className="bg-teal-600 hover:bg-teal-700">
+                        Try Again
+                      </Button>
                       <Button variant="outline" onClick={() => setActiveChallengeId(null)}>
                         Back to Challenges
                       </Button>
@@ -1060,22 +1139,26 @@ export default function TypingPractice() {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => navigator.clipboard.writeText(getChallengeLink(activeChallengeId))}
+                        onClick={() => copyToClipboard(getChallengeLink(activeChallengeId))}
+                        className="bg-white dark:bg-slate-800"
                       >
                         <Share2 className="h-4 w-4 mr-2" />
                         Share
                       </Button>
                     </div>
 
-                    <div className="bg-slate-50 dark:bg-slate-900 p-6 rounded-lg cursor-text" onClick={focusInput}>
-                      <div className="min-h-[120px] max-h-[120px] overflow-hidden mb-4 p-2">{renderTextContent}</div>
+                    <div
+                      className="bg-white dark:bg-slate-800 p-6 rounded-lg cursor-text shadow-sm"
+                      onClick={focusInput}
+                    >
+                      <div className="min-h-[140px] max-h-[140px] overflow-hidden mb-4 p-2">{renderTextContent}</div>
 
                       <input
                         ref={inputRef}
                         type="text"
                         value={currentInput}
                         onChange={handleInputChange}
-                        className="w-full p-3 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                        className="w-full p-3 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-400"
                         placeholder="Type to start the challenge..."
                         autoFocus
                         autoComplete="off"
@@ -1087,7 +1170,7 @@ export default function TypingPractice() {
 
                     <div className="mt-6">
                       <h4 className="text-md font-semibold mb-3">Challenge Leaderboard</h4>
-                      <div className="bg-slate-100 dark:bg-slate-800 rounded-lg p-3">
+                      <div className="bg-white dark:bg-slate-800 rounded-lg p-3 shadow-sm">
                         {challenges.find((c) => c.id === activeChallengeId)?.participants.length ? (
                           <div className="divide-y divide-slate-200 dark:divide-slate-700">
                             {challenges
@@ -1100,7 +1183,7 @@ export default function TypingPractice() {
                                       {i + 1}. {participant.name}
                                     </span>
                                     {participant.name === userName && (
-                                      <span className="ml-2 text-xs bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded-full">
+                                      <span className="ml-2 text-xs bg-teal-100 dark:bg-teal-900 text-teal-800 dark:text-teal-200 px-2 py-0.5 rounded-full">
                                         You
                                       </span>
                                     )}
@@ -1127,7 +1210,9 @@ export default function TypingPractice() {
                   <h3 className="text-lg font-bold">Typing Challenges</h3>
                   <Dialog>
                     <DialogTrigger asChild>
-                      <Button size="sm">Create Challenge</Button>
+                      <Button size="sm" className="bg-teal-600 hover:bg-teal-700">
+                        Create Challenge
+                      </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
@@ -1147,7 +1232,11 @@ export default function TypingPractice() {
                           The challenge will use your current settings for difficulty, mode, and time/word limit.
                         </p>
                       </div>
-                      <Button onClick={createChallenge} disabled={!userName.trim()}>
+                      <Button
+                        onClick={createChallenge}
+                        disabled={!userName.trim()}
+                        className="bg-teal-600 hover:bg-teal-700"
+                      >
                         Create Challenge
                       </Button>
                     </DialogContent>
@@ -1157,7 +1246,7 @@ export default function TypingPractice() {
                 {challenges.length > 0 ? (
                   <div className="space-y-3">
                     {challenges.map((challenge) => (
-                      <div key={challenge.id} className="bg-slate-100 dark:bg-slate-800 rounded-lg p-4">
+                      <div key={challenge.id} className="bg-white dark:bg-slate-800 rounded-lg p-4 shadow-sm">
                         <div className="flex justify-between items-center mb-2">
                           <h4 className="font-semibold">{challenge.creatorName}'s Challenge</h4>
                           <div className="text-xs text-slate-500">
@@ -1177,13 +1266,18 @@ export default function TypingPractice() {
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Button size="sm" onClick={() => setActiveChallengeId(challenge.id)}>
+                          <Button
+                            size="sm"
+                            onClick={() => setActiveChallengeId(challenge.id)}
+                            className="bg-teal-600 hover:bg-teal-700"
+                          >
                             Accept Challenge
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => navigator.clipboard.writeText(getChallengeLink(challenge.id))}
+                            onClick={() => copyToClipboard(getChallengeLink(challenge.id))}
+                            className="bg-white dark:bg-slate-800"
                           >
                             <Share2 className="h-4 w-4 mr-1" />
                             Share
@@ -1193,11 +1287,15 @@ export default function TypingPractice() {
                     ))}
                   </div>
                 ) : (
-                  <div className="bg-slate-100 dark:bg-slate-800 rounded-lg p-6 text-center">
+                  <div className="bg-white dark:bg-slate-800 rounded-lg p-6 text-center shadow-sm">
                     <p className="text-slate-600 dark:text-slate-400 mb-4">
                       No challenges available. Create your first challenge to compete with friends!
                     </p>
-                    <Button onClick={createChallenge} disabled={!userName.trim()}>
+                    <Button
+                      onClick={createChallenge}
+                      disabled={!userName.trim()}
+                      className="bg-teal-600 hover:bg-teal-700"
+                    >
                       Create Challenge
                     </Button>
                   </div>
@@ -1220,7 +1318,11 @@ export default function TypingPractice() {
                     onChange={(e) => setUserName(e.target.value)}
                     className="mb-4"
                   />
-                  <Button onClick={() => saveUsername(userName)} disabled={!userName.trim()}>
+                  <Button
+                    onClick={() => saveUsername(userName)}
+                    disabled={!userName.trim()}
+                    className="bg-teal-600 hover:bg-teal-700"
+                  >
                     Save Name
                   </Button>
                 </div>
@@ -1234,26 +1336,35 @@ export default function TypingPractice() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => navigator.clipboard.writeText(getRoomLink(activeRoomId))}
+                      onClick={() => copyToClipboard(getRoomLink(activeRoomId))}
+                      className="bg-white dark:bg-slate-800"
                     >
                       <Share2 className="h-4 w-4 mr-1" />
                       Invite
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => setActiveRoomId(null)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setActiveRoomId(null)}
+                      className="bg-white dark:bg-slate-800"
+                    >
                       Leave Room
                     </Button>
                   </div>
                 </div>
 
-                <div className="bg-slate-50 dark:bg-slate-900 p-6 rounded-lg cursor-text mb-4" onClick={focusInput}>
-                  <div className="min-h-[120px] max-h-[120px] overflow-hidden mb-4 p-2">{renderTextContent}</div>
+                <div
+                  className="bg-white dark:bg-slate-800 p-6 rounded-lg cursor-text mb-4 shadow-sm"
+                  onClick={focusInput}
+                >
+                  <div className="min-h-[140px] max-h-[140px] overflow-hidden mb-4 p-2">{renderTextContent}</div>
 
                   <input
                     ref={inputRef}
                     type="text"
                     value={currentInput}
                     onChange={handleInputChange}
-                    className="w-full p-3 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    className="w-full p-3 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-400"
                     placeholder="Type to start..."
                     autoFocus
                     autoComplete="off"
@@ -1265,7 +1376,7 @@ export default function TypingPractice() {
 
                 <div>
                   <h4 className="text-md font-semibold mb-3">Room Participants</h4>
-                  <div className="bg-slate-100 dark:bg-slate-800 rounded-lg p-3">
+                  <div className="bg-white dark:bg-slate-800 rounded-lg p-3 shadow-sm">
                     {rooms
                       .find((r) => r.id === activeRoomId)
                       ?.participants.map((participant, i) => (
@@ -1276,7 +1387,7 @@ export default function TypingPractice() {
                           <div className="flex items-center">
                             <span className="font-medium">{participant.name}</span>
                             {participant.name === userName && (
-                              <span className="ml-2 text-xs bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded-full">
+                              <span className="ml-2 text-xs bg-teal-100 dark:bg-teal-900 text-teal-800 dark:text-teal-200 px-2 py-0.5 rounded-full">
                                 You
                               </span>
                             )}
@@ -1288,7 +1399,7 @@ export default function TypingPractice() {
                           </div>
                           <div className="flex items-center gap-4">
                             <div className="w-32 bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
-                              <div className="bg-green-500 h-full" style={{ width: `${participant.progress}%` }}></div>
+                              <div className="bg-teal-500 h-full" style={{ width: `${participant.progress}%` }}></div>
                             </div>
                             <span className="text-sm">{participant.wpm} WPM</span>
                           </div>
@@ -1304,7 +1415,9 @@ export default function TypingPractice() {
                   <h3 className="text-lg font-bold">Typing Rooms</h3>
                   <Dialog>
                     <DialogTrigger asChild>
-                      <Button size="sm">Create Room</Button>
+                      <Button size="sm" className="bg-teal-600 hover:bg-teal-700">
+                        Create Room
+                      </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
@@ -1325,7 +1438,11 @@ export default function TypingPractice() {
                           The room will use your current settings for difficulty, mode, and time/word limit.
                         </p>
                       </div>
-                      <Button onClick={createRoom} disabled={!userName.trim()}>
+                      <Button
+                        onClick={createRoom}
+                        disabled={!userName.trim()}
+                        className="bg-teal-600 hover:bg-teal-700"
+                      >
                         Create Room
                       </Button>
                     </DialogContent>
@@ -1335,11 +1452,11 @@ export default function TypingPractice() {
                 {rooms.length > 0 ? (
                   <div className="space-y-3">
                     {rooms.map((room) => (
-                      <div key={room.id} className="bg-slate-100 dark:bg-slate-800 rounded-lg p-4">
+                      <div key={room.id} className="bg-white dark:bg-slate-800 rounded-lg p-4 shadow-sm">
                         <div className="flex justify-between items-center mb-2">
                           <h4 className="font-semibold">{room.name}</h4>
                           <div className="text-xs">
-                            <span className="bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 px-2 py-0.5 rounded-full">
+                            <span className="bg-teal-100 dark:bg-teal-900 text-teal-800 dark:text-teal-200 px-2 py-0.5 rounded-full">
                               {room.participants.filter((p) => p.isActive).length} active
                             </span>
                           </div>
@@ -1354,13 +1471,14 @@ export default function TypingPractice() {
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Button size="sm" onClick={() => joinRoom(room.id)}>
+                          <Button size="sm" onClick={() => joinRoom(room.id)} className="bg-teal-600 hover:bg-teal-700">
                             {room.participants.some((p) => p.name === userName) ? "Rejoin Room" : "Join Room"}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => navigator.clipboard.writeText(getRoomLink(room.id))}
+                            onClick={() => copyToClipboard(getRoomLink(room.id))}
+                            className="bg-white dark:bg-slate-800"
                           >
                             <Share2 className="h-4 w-4 mr-1" />
                             Invite
@@ -1370,11 +1488,11 @@ export default function TypingPractice() {
                     ))}
                   </div>
                 ) : (
-                  <div className="bg-slate-100 dark:bg-slate-800 rounded-lg p-6 text-center">
+                  <div className="bg-white dark:bg-slate-800 rounded-lg p-6 text-center shadow-sm">
                     <p className="text-slate-600 dark:text-slate-400 mb-4">
                       No rooms available. Create your first room to type with friends!
                     </p>
-                    <Button onClick={createRoom} disabled={!userName.trim()}>
+                    <Button onClick={createRoom} disabled={!userName.trim()} className="bg-teal-600 hover:bg-teal-700">
                       Create Room
                     </Button>
                   </div>
@@ -1385,28 +1503,35 @@ export default function TypingPractice() {
         )}
 
         <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-800">
-          <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <BarChart2 className="h-5 w-5 mr-2" />
-            Your Stats
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="text-center">
-              <div className="text-sm text-slate-500 dark:text-slate-400">Best WPM</div>
-              <div className="text-xl font-bold">{stats.wpm || 0}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-sm text-slate-500 dark:text-slate-400">Avg. Accuracy</div>
-              <div className="text-xl font-bold">{stats.accuracy || 100}%</div>
-            </div>
-            <div className="text-center">
-              <div className="text-sm text-slate-500 dark:text-slate-400">Tests Completed</div>
-              <div className="text-xl font-bold">{stats.completedTests}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-sm text-slate-500 dark:text-slate-400">Total Characters</div>
-              <div className="text-xl font-bold">{stats.totalChars}</div>
-            </div>
-          </div>
+          <Collapsible open={statsOpen} onOpenChange={setStatsOpen} className="w-full">
+            <CollapsibleTrigger className="flex items-center justify-center w-full py-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors">
+              <div className="flex items-center">
+                <BarChart2 className="h-5 w-5 mr-2 text-teal-600 dark:text-teal-400" />
+                <span className="text-lg font-semibold">Your Stats</span>
+                {statsOpen ? <ChevronUp className="h-5 w-5 ml-2" /> : <ChevronDown className="h-5 w-5 ml-2" />}
+              </div>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm text-center">
+                  <div className="text-sm text-slate-500 dark:text-slate-400">Best WPM</div>
+                  <div className="text-xl font-bold text-teal-600 dark:text-teal-400">{stats.wpm || 0}</div>
+                </div>
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm text-center">
+                  <div className="text-sm text-slate-500 dark:text-slate-400">Avg. Accuracy</div>
+                  <div className="text-xl font-bold text-teal-600 dark:text-teal-400">{stats.accuracy || 100}%</div>
+                </div>
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm text-center">
+                  <div className="text-sm text-slate-500 dark:text-slate-400">Tests Completed</div>
+                  <div className="text-xl font-bold text-teal-600 dark:text-teal-400">{stats.completedTests || 0}</div>
+                </div>
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm text-center">
+                  <div className="text-sm text-slate-500 dark:text-slate-400">Total Characters</div>
+                  <div className="text-xl font-bold text-teal-600 dark:text-teal-400">{stats.totalChars || 0}</div>
+                </div>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
       </CardContent>
     </Card>
